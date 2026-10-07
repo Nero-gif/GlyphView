@@ -13,46 +13,16 @@ GlyphView is a lightweight, modern desktop image viewer for Linux with a built-i
 - **Folder Navigation:** Quickly jump to the `Next` or `Previous` image in the current folder using toolbar buttons or the `Left` and `Right` arrow keys.
 - **File Manager Integration:** Supports "Open With" integration to open images directly from your OS file manager.
 
-## Requirements
-
-- **Python 3**
-- **System packages:** `tesseract-ocr` (and language packs like `tesseract-ocr-ces` for Czech)
-- **Python packages:** `PyQt6`, `pytesseract`, `Pillow`
-
 ## Installation
 
-### 1. Install System Dependencies (Linux Mint / Ubuntu / Debian)
-You need to install the Tesseract OCR engine and the necessary language packs.
-```bash
-sudo apt-get update
-sudo apt-get install -y tesseract-ocr tesseract-ocr-ces
-```
-*(Alternatively, you can run the provided `install_dependencies.sh` script).*
+The easiest way to install GlyphView on Debian-based distributions (like Linux Mint or Ubuntu) is by using the standalone `.deb` package. The package automatically handles system dependencies (like the Tesseract OCR engine) and sets up desktop integration for your file manager.
 
-### 2. Install Python Dependencies
-It is highly recommended to use a virtual environment.
-```bash
-pip install -r requirements.txt
-```
-
-### 3. (Optional) Build a Debian Package (.deb)
-To create a standalone `.deb` package with desktop integration (so you can right-click an image and choose "Open with GlyphView"):
-```bash
-./prepare_deb.sh
-```
-The script will compile the app and prepare the Debian structure. It will then output the final command you need to run to build the `.deb` file, which is:
-```bash
-dpkg-deb --build glyphview_1.0.0_amd64
-```
-You can install the generated package using `sudo apt install ./glyphview_1.0.0_amd64.deb`.
+1. Download the latest `.deb` package from the [Releases](https://github.com/Nero-gif/GlyphView/releases) page.
+2. Install the package using your preferred package manager (e.g., simply double-click the file).
 
 ## Usage
 
-Start the application from the terminal:
-```bash
-python main.py
-```
-*Or, if you installed the `.deb` package, launch **GlyphView** from your application menu or right-click an image in your file manager.*
+Once installed, launch **GlyphView** from your desktop environment's application menu, or right-click an image in your file manager and select "Open With".
 
 **Controls:**
 - **Open Image:** Click the button in the top toolbar.
