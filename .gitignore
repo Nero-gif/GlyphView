@@ -1,0 +1,23 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build Artifacts
+build/
+dist/
+*.spec
+
+# Debian Packaging Artifacts
+glyphview_*_amd64/
+*.deb
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
