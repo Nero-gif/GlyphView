@@ -1,33 +1,82 @@
 import sys
 import os
 import pytesseract
-from PIL import Image
+import subprocess
+import csv
+import io
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphicsScene, 
                              QGraphicsPixmapItem, QToolBar, QFileDialog, 
                              QStatusBar, QMessageBox, QGraphicsRectItem)
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QKeySequence, QPen
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QKeySequence, QPen, QAction
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 
 class OcrWorker(QThread):
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
 
-    def __init__(self, image_path):
-        super().__init__()
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
         self.image_path = image_path
+        self.is_cancelled = False
+        self._process = None
+
+    def cancel(self):
+        """Cancels the running Tesseract process at the OS level."""
+        self.is_cancelled = True
+        if self._process:
+            try:
+                self._process.kill()
+            except Exception:
+                pass
 
     def run(self):
+        if self.is_cancelled:
+            return
+            
         try:
-            # Získáme data o slovech a jejich pozicích
-            # Použijeme mód --psm 11 (Sparse text), který se snaží najít text kdekoli v obrázku bez ohledu na strukturu stránky
-            custom_config = r'--psm 11'
-            data = pytesseract.image_to_data(Image.open(self.image_path), lang='ces+eng', config=custom_config, output_type=pytesseract.Output.DICT)
+            cmd = ['tesseract', self.image_path, 'stdout', '-l', 'ces+eng', '--psm', '11', 'tsv']
+            
+            # Instead of using the pytesseract library, we call Tesseract directly via subprocess.
+            # This gives us the ability to instantly kill the process (self._process) at any time.
+            self._process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True,
+                encoding='utf-8'
+            )
+            
+            # The thread blocks here until the process finishes or is killed
+            stdout_data, stderr_data = self._process.communicate()
+            
+            # If the thread was cancelled during processing, exit immediately
+            if self.is_cancelled:
+                return
+
+            # Return code -9 usually means SIGKILL (process was killed by us)
+            if self._process.returncode != 0 and self._process.returncode != -9:
+                self.error.emit(f"Tesseract error:\n{stderr_data}")
+                return
+                
+            data = {'level': [], 'left': [], 'top': [], 'width': [], 'height': [], 'text': []}
+            reader = csv.DictReader(io.StringIO(stdout_data), delimiter='\t', quoting=csv.QUOTE_NONE)
+            
+            for row in reader:
+                data['level'].append(int(row.get('level', 0)))
+                data['left'].append(int(row.get('left', 0)))
+                data['top'].append(int(row.get('top', 0)))
+                data['width'].append(int(row.get('width', 0)))
+                data['height'].append(int(row.get('height', 0)))
+                data['text'].append(row.get('text', ''))
+                
             self.finished.emit(data)
+
         except Exception as e:
-            self.error.emit(str(e))
+            if not self.is_cancelled:
+                self.error.emit(str(e))
 
 class OcrTextItem(QGraphicsRectItem):
-    """Vizuální blok zastupující jedno detekované slovo."""
+    """Visual block representing a single detected word."""
     def __init__(self, text, x, y, w, h, index):
         super().__init__(0, 0, w, h)
         self.text = text
@@ -39,10 +88,10 @@ class OcrTextItem(QGraphicsRectItem):
     def set_highlighted(self, val):
         if self.is_highlighted != val:
             self.is_highlighted = val
-            self.update() # Vynutí překreslení
+            self.update() # Forces a repaint
 
     def paint(self, painter, option, widget=None):
-        # Vykreslí poloprůhledný modrý obdélník, pokud je text vybrán (jako klasický výběr textu)
+        # Draws a semi-transparent blue rectangle if the text is selected
         if self.is_highlighted:
             painter.setBrush(QColor(0, 120, 215, 100)) 
             painter.drawRect(self.boundingRect())
@@ -59,7 +108,7 @@ class InteractiveGraphicsView(QGraphicsView):
         self._is_panning = False
         self._pan_start_pos = None
         
-        # Proměnné pro lineární výběr textu (tažením myši)
+        # Variables for linear text selection (mouse dragging)
         self._is_selecting = False
         self._selection_start_index = -1
         self._selection_end_index = -1
@@ -88,7 +137,7 @@ class InteractiveGraphicsView(QGraphicsView):
             super().wheelEvent(event)
 
     def get_closest_item(self, scene_pos, max_dist):
-        """Najde nejbližší slovo k pozici kurzoru (vzdálenost od bounding boxu)."""
+        """Finds the closest word to the cursor position (distance from bounding box)."""
         closest_item = None
         min_dist_sq = max_dist ** 2
         for item in self.ocr_items:
@@ -104,13 +153,13 @@ class InteractiveGraphicsView(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
-            # Začátek posouvání obrazu (panning)
+            # Start panning the image
             self._is_panning = True
             self._pan_start_pos = event.position().toPoint()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
         elif event.button() == Qt.MouseButton.LeftButton:
-            # Začátek výběru textu
+            # Start text selection
             pos = self.mapToScene(event.position().toPoint())
             closest = self.get_closest_item(pos, max_dist=80)
             if closest:
@@ -132,7 +181,7 @@ class InteractiveGraphicsView(QGraphicsView):
             self._pan_start_pos = event.position().toPoint()
             event.accept()
         elif self._is_selecting:
-            # Tažení pro výběr více slov do bloku
+            # Dragging to select multiple words
             pos = self.mapToScene(event.position().toPoint())
             closest = self.get_closest_item(pos, max_dist=200)
             if closest:
@@ -154,7 +203,7 @@ class InteractiveGraphicsView(QGraphicsView):
             super().mouseReleaseEvent(event)
 
     def update_selection(self):
-        """Zvýrazní všechna slova mezi počátečním a koncovým indexem."""
+        """Highlights all words between the start and end indices."""
         start = min(self._selection_start_index, self._selection_end_index)
         end = max(self._selection_start_index, self._selection_end_index)
         for item in self.ocr_items:
@@ -167,13 +216,18 @@ class InteractiveGraphicsView(QGraphicsView):
         self._selection_end_index = -1
 
     def keyPressEvent(self, event):
+        # Ignore arrow keys so the application can process them as shortcuts for image navigation
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            event.ignore()
+            return
+            
         if event.matches(QKeySequence.StandardKey.Copy):
             self.copy_selected_text()
         else:
             super().keyPressEvent(event)
 
     def copy_selected_text(self):
-        """Zkopíruje vybraný text do schránky s ohledem na řádkování."""
+        """Copies the selected text to the clipboard, respecting line breaks."""
         if not self.ocr_items:
             return
         
@@ -191,7 +245,7 @@ class InteractiveGraphicsView(QGraphicsView):
             if i < len(selected_items) - 1:
                 curr = selected_items[i]
                 nxt = selected_items[i+1]
-                # Přidání nového řádku, pokud je další slovo výrazně níže (např. o polovinu výšky aktuálního slova)
+                # Add a newline if the next word is significantly lower
                 if nxt.y() - curr.y() > curr.boundingRect().height() * 0.5:
                     text_parts.append('\n')
                 else:
@@ -199,75 +253,137 @@ class InteractiveGraphicsView(QGraphicsView):
                     
         full_text = "".join(text_parts)
         QApplication.clipboard().setText(full_text)
-        self.textCopied.emit(f"Zkopírováno do schránky.")
+        self.textCopied.emit(f"Copied to clipboard.")
 
 class GlyphViewApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GlyphView")
         self.resize(1024, 768)
+        
+        # State variables for folder navigation
+        self.current_folder = ""
+        self.image_files = []
+        self.current_image_index = -1
 
         self.scene = QGraphicsScene(self)
         self.view = InteractiveGraphicsView(self.scene, self)
         self.view.textCopied.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
         self.setCentralWidget(self.view)
 
-        self.toolbar = QToolBar("Hlavní panel")
+        self.toolbar = QToolBar("Main Toolbar")
         self.addToolBar(self.toolbar)
 
-        open_action = self.toolbar.addAction("Otevřít obrázek")
+        open_action = self.toolbar.addAction("Open Image")
         open_action.triggered.connect(self.open_image)
+        
+        self.toolbar.addSeparator()
+        
+        self.prev_action = QAction("Previous", self)
+        self.prev_action.triggered.connect(self.prev_image)
+        self.prev_action.setShortcut(QKeySequence(Qt.Key.Key_Left))
+        self.toolbar.addAction(self.prev_action)
+        
+        self.next_action = QAction("Next", self)
+        self.next_action.triggered.connect(self.next_image)
+        self.next_action.setShortcut(QKeySequence(Qt.Key.Key_Right))
+        self.toolbar.addAction(self.next_action)
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Připraven.")
+        self.status_bar.showMessage("Ready.")
 
         self.current_pixmap_item = None
         self.ocr_worker = None
 
+        self.update_nav_buttons()
         self.check_tesseract()
+
+    def update_image_list(self):
+        valid_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.xpm', '.webp')
+        try:
+            files = os.listdir(self.current_folder)
+            # Filter for images only
+            self.image_files = sorted([f for f in files if f.lower().endswith(valid_extensions)])
+        except Exception:
+            self.image_files = []
+
+    def update_nav_buttons(self):
+        has_images = len(self.image_files) > 1
+        has_prev = has_images and self.current_image_index > 0
+        has_next = has_images and self.current_image_index < len(self.image_files) - 1
+        
+        self.prev_action.setEnabled(has_prev)
+        self.next_action.setEnabled(has_next)
+
+    def prev_image(self):
+        if self.current_image_index > 0:
+            self.load_image(os.path.join(self.current_folder, self.image_files[self.current_image_index - 1]))
+
+    def next_image(self):
+        if self.current_image_index < len(self.image_files) - 1:
+            self.load_image(os.path.join(self.current_folder, self.image_files[self.current_image_index + 1]))
 
     def check_tesseract(self):
         try:
             pytesseract.get_tesseract_version()
         except pytesseract.TesseractNotFoundError:
-            QMessageBox.critical(self, "Tesseract nenalezen", 
-                                 "Tesseract OCR není v systému nainstalován nebo chybí v PATH.\n\n"
-                                 "V Linux Mint / Ubuntu ho můžete nainstalovat pomocí:\n"
+            QMessageBox.critical(self, "Tesseract not found", 
+                                 "Tesseract OCR is not installed or missing from PATH.\n\n"
+                                 "In Linux Mint / Ubuntu, you can install it using:\n"
                                  "sudo apt update\n"
                                  "sudo apt install tesseract-ocr tesseract-ocr-ces")
         except Exception as e:
-            print(f"Varování při detekci Tesseractu: {e}")
+            print(f"Warning during Tesseract detection: {e}")
 
     def open_image(self):
-        file_name, _ = QFileDialog.getOpenFileName(self, "Otevřít obrázek", "", "Images (*.png *.xpm *.jpg *.jpeg *.bmp)")
+        file_name, _ = QFileDialog.getOpenFileName(self, "Open Image", "", "Images (*.png *.xpm *.jpg *.jpeg *.bmp *.webp)")
         if file_name:
             self.load_image(file_name)
 
     def load_image(self, file_path):
+        # 1. Immediately cancel the previously running OCR process
+        if self.ocr_worker and self.ocr_worker.isRunning():
+            self.ocr_worker.cancel()
+            self.ocr_worker.wait() # The thread will terminate almost instantly because the process is killed by the OS via SIGKILL
+            
         self.scene.clear()
         self.view.set_ocr_items([])
         
         pixmap = QPixmap(file_path)
         if pixmap.isNull():
-            self.status_bar.showMessage("Nepodařilo se načíst obrázek.")
+            self.status_bar.showMessage("Failed to load image.")
             return
+
+        folder = os.path.dirname(os.path.abspath(file_path))
+        if folder != self.current_folder:
+            self.current_folder = folder
+            self.update_image_list()
+        
+        filename = os.path.basename(file_path)
+        if filename in self.image_files:
+            self.current_image_index = self.image_files.index(filename)
+        self.update_nav_buttons()
+        self.setWindowTitle(f"GlyphView - {filename}")
 
         self.current_pixmap_item = QGraphicsPixmapItem(pixmap)
         self.scene.addItem(self.current_pixmap_item)
         self.scene.setSceneRect(self.current_pixmap_item.boundingRect())
         
         self.view.fitInView(self.scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.status_bar.showMessage("GlyphView is analyzing text...")
 
-        self.status_bar.showMessage("GlyphView analyzuje text...")
-
-        self.ocr_worker = OcrWorker(file_path)
+        # 2. Start a clean new OCR thread for the current image
+        self.ocr_worker = OcrWorker(file_path, parent=self)
         self.ocr_worker.finished.connect(self.on_ocr_finished)
         self.ocr_worker.error.connect(self.on_ocr_error)
         self.ocr_worker.start()
 
     def on_ocr_finished(self, data):
-        self.status_bar.showMessage("Analýza dokončena. Nyní můžete tažením myši označit text a zkopírovat ho (Ctrl+C).", 7000)
+        if self.sender() != self.ocr_worker:
+            return
+            
+        self.status_bar.showMessage("Analysis complete. You can now drag your mouse to select text and copy it (Ctrl+C).", 7000)
         
         n_boxes = len(data['level'])
         items_list = []
@@ -280,21 +396,26 @@ class GlyphViewApp(QMainWindow):
                 w = data['width'][i]
                 h = data['height'][i]
 
-                # Reprezentuje detekované slovo - bez viditelného textu, 
-                # ale schopné se "obarvit" při výběru
                 text_item = OcrTextItem(text, x, y, w, h, len(items_list))
                 self.scene.addItem(text_item)
                 items_list.append(text_item)
                 
-        # Předáme seznam prvků zachovávající pořadí čtení do pohledu
         self.view.set_ocr_items(items_list)
 
     def on_ocr_error(self, err_msg):
-        self.status_bar.showMessage("Chyba při analýze textu.")
-        QMessageBox.warning(self, "OCR Chyba", f"Došlo k chybě při OCR analýze:\n{err_msg}")
+        if self.sender() != self.ocr_worker:
+            return
+        self.status_bar.showMessage("Error analyzing text.")
+        QMessageBox.warning(self, "OCR Error", f"An error occurred during OCR analysis:\n{err_msg}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = GlyphViewApp()
     window.show()
+    
+    if len(sys.argv) > 1:
+        file_path = sys.argv[1]
+        if os.path.isfile(file_path):
+            window.load_image(file_path)
+            
     sys.exit(app.exec())
