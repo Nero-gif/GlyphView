@@ -1,0 +1,10 @@
+Package: glyphview
+Version: 1.0.0
+Section: graphics
+Priority: optional
+Architecture: amd64
+Depends: tesseract-ocr, tesseract-ocr-ces, tesseract-ocr-eng
+Maintainer: Nero <nero@example.com>
+Description: Image viewer with Live Text (OCR) functionality.
+ GlyphView is a desktop application that allows you to view images
+ and seamlessly select and copy text from them using Tesseract OCR.

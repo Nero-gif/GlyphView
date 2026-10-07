@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=GlyphView
+Comment=Image viewer with Live Text OCR
+Exec=/usr/bin/glyphview %f
+Icon=image-viewer
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;Viewer;
+MimeType=image/bmp;image/gif;image/jpeg;image/jpg;image/png;image/webp;image/x-xpixmap;
